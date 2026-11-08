@@ -1,0 +1,1029 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useEffect, useRef } from 'react';
+import confetti from 'canvas-confetti';
+import { 
+  Crosshair, 
+  ShieldCheck, 
+  Coins, 
+  Globe, 
+  ExternalLink, 
+  Volume2, 
+  VolumeX, 
+  RefreshCw, 
+  Layers, 
+  Monitor, 
+  Activity,
+  Zap,
+  Sparkles,
+  Info,
+  Clock,
+  Key,
+  Gamepad2,
+  Bot,
+  Table,
+  CheckCircle2,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  Brain,
+  Cpu,
+  BarChart3
+} from 'lucide-react';
+import { FloatingPredator } from './components/FloatingPredator';
+import { PlayableGameStation } from './components/PlayableGameStation';
+import { WingoGameBoard } from './components/WingoGameBoard';
+import { AdminPanel } from './components/AdminPanel';
+import { ShweLotteryStatus } from './components/ShweLotteryStatus';
+import { UserCoinModal } from './components/UserCoinModal';
+import { WingoDraw, PredictionResult, ShweAccount, UserAccessState, AlgorithmType, AllMethodsStats, AutoSwitchEvent, AiFormula, BettingEngineMode } from './types/lottery';
+import { calculateAutoGuess, calculateAllPredictions, calculateInitialMethodStats, updateMethodStatsWithResult, evaluateAutoSwitch } from './utils/predictionEngine';
+import { playWinSound, playYouWinVoice, playRadarLockSound, playTickSound, playAdminUnlockedSound } from './utils/audio';
+import { MultiMethodBenchmarkBar } from './components/MultiMethodBenchmarkBar';
+import { AiFormulaPanel } from './components/AiFormulaPanel';
+import { AiModeSwitcherBar } from './components/AiModeSwitcherBar';
+import { generateAiFormulaFromHistory, isFormulaExpired, getFormulaRemainingSeconds } from './utils/aiFormulaEngine';
+
+export default function App() {
+  // Navigation tabs: 'PLAY' (Default playable console), 'WEBVIEW' (shwelottery.net), 'HISTORY'
+  const [activeTab, setActiveTab] = useState<'PLAY' | 'WEBVIEW' | 'HISTORY'>('PLAY');
+
+  // Game Type Selector: 1 = Win Go 1Min (60s), 30 = Win Go 30s
+  const [selectedTypeId, setSelectedTypeId] = useState<number>(1);
+
+  // Wingo Live Game State
+  const [history, setHistory] = useState<WingoDraw[]>([]);
+  const [currentPeriod, setCurrentPeriod] = useState<string>(''); // Active ongoing period on website
+  const [secondsLeft, setSecondsLeft] = useState<number>(60);
+  const [prediction, setPrediction] = useState<PredictionResult | null>(null);
+
+  // Win/Loss statistics
+  const [winCount, setWinCount] = useState<number>(18);
+  const [lossCount, setLossCount] = useState<number>(2);
+
+  // Audio state
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+
+  // ShweLottery Account State (Phone: 9798023829, Pass: 166061kp)
+  const [account, setAccount] = useState<ShweAccount>({
+    phone: '9798023829',
+    password: '166061kp',
+    isConnected: true,
+    latencyMs: 34,
+    lastPing: Date.now(),
+    targetUrl: 'https://www.shwelottery.net/',
+    nickName: 'MemberNNG0XDE5',
+    amount: '1,000.00'
+  });
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // User Access & Admin State (ADMIN BYPASSES ALL TIME LIMITS)
+  const [userAccess, setUserAccess] = useState<UserAccessState>({
+    isAdmin: false,
+    timeCoins: 5,
+    remainingSeconds: 1800, // 30 minutes for normal user
+    unlimitedTime: false
+  });
+
+  // Modal dialog states
+  const [isAdminOpen, setIsAdminOpen] = useState<boolean>(false);
+  const [isRechargeOpen, setIsRechargeOpen] = useState<boolean>(false);
+
+  // AI Sensitivity setting & Model Selection (Meta-Consensus Super AI as default premier method)
+  const [sensitivity, setSensitivity] = useState<'BALANCED' | 'AGGRESSIVE' | 'HIGH_CONFIDENCE'>('BALANCED');
+  const [aiAlgorithm, setAiAlgorithm] = useState<AlgorithmType>('META_SUPER_AI');
+
+  // Multi-Method Real-Time Benchmarking & Adaptive Auto-Switching States
+  const [methodStats, setMethodStats] = useState<AllMethodsStats>(() => calculateInitialMethodStats([]));
+  const [methodPredictions, setMethodPredictions] = useState<Record<AlgorithmType, PredictionResult> | null>(null);
+  const [isAutoSwitchEnabled, setIsAutoSwitchEnabled] = useState<boolean>(true);
+  const [autoSwitchEvent, setAutoSwitchEvent] = useState<AutoSwitchEvent | null>(null);
+  const [isAutoBotActive, setIsAutoBotActive] = useState<boolean>(false);
+  const [isPredatorVisible, setIsPredatorVisible] = useState<boolean>(true);
+
+  // AI 40-Matches Research & 5-Minutes Formula Generator State (runs concurrently in background)
+  const [aiFormula, setAiFormula] = useState<AiFormula | null>(null);
+  const [pendingFormulaToApply, setPendingFormulaToApply] = useState<AiFormula | null>(null);
+  const aiFormulaRef = useRef<AiFormula | null>(null);
+
+  // Active Betting Engine Mode ('FORMULA_MODE' or 'METHODS_7_MODE')
+  const [bettingEngineMode, setBettingEngineMode] = useState<BettingEngineMode>('METHODS_7_MODE');
+
+  // Secondary dashboards accordion open/close state (Default ALL CLOSED so Live Auto Monitoring Dashboard is the primary focus)
+  const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({
+    aiFormula: false,
+    modeSwitcher: false,
+    benchmark: false,
+    shweStatus: false,
+  });
+
+  const togglePanel = (panelKey: string) => {
+    setOpenPanels((prev) => ({
+      ...prev,
+      [panelKey]: !prev[panelKey]
+    }));
+  };
+
+  // Real-time ticker for 5-minute formula countdown in title banner
+  const [formulaCountdownSeconds, setFormulaCountdownSeconds] = useState<number>(300);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (aiFormulaRef.current) {
+        setFormulaCountdownSeconds(getFormulaRemainingSeconds(aiFormulaRef.current));
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Tracking refs to accurately detect draw transitions
+  const lastDrawnPeriodRef = useRef<string>('');
+  const lastPredictedPeriodRef = useRef<string>('');
+  const currentPredictionRef = useRef<PredictionResult | null>(null);
+  const aiAlgorithmRef = useRef<AlgorithmType>(aiAlgorithm);
+  const isAutoSwitchEnabledRef = useRef<boolean>(isAutoSwitchEnabled);
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const activeMethodPredictionsRef = useRef<{
+    targetPeriod: string;
+    predictions: Record<AlgorithmType, PredictionResult>;
+  } | null>(null);
+  const bootstrappedHistoryRef = useRef<boolean>(false);
+  const userConsecutiveLossesRef = useRef<number>(0);
+
+  // Copy helper state
+  const [copiedLogin, setCopiedLogin] = useState(false);
+
+  useEffect(() => {
+    currentPredictionRef.current = prediction;
+  }, [prediction]);
+
+  useEffect(() => {
+    aiAlgorithmRef.current = aiAlgorithm;
+  }, [aiAlgorithm]);
+
+  useEffect(() => {
+    isAutoSwitchEnabledRef.current = isAutoSwitchEnabled;
+  }, [isAutoSwitchEnabled]);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    aiFormulaRef.current = aiFormula;
+  }, [aiFormula]);
+
+  // Background 5-minute Formula cycle runner (researches latest 40 matches concurrently)
+  useEffect(() => {
+    const formulaInterval = setInterval(() => {
+      if (history && history.length > 0) {
+        if (!aiFormulaRef.current || isFormulaExpired(aiFormulaRef.current)) {
+          const freshFormula = generateAiFormulaFromHistory(history, aiFormulaRef.current);
+          setAiFormula(freshFormula);
+          aiFormulaRef.current = freshFormula;
+        }
+      }
+    }, 4000);
+
+    return () => clearInterval(formulaInterval);
+  }, [history]);
+
+  const handleApplyAiFormula = (formula: AiFormula) => {
+    setBettingEngineMode('FORMULA_MODE');
+    setAiAlgorithm(formula.recommendedMethod);
+    aiAlgorithmRef.current = formula.recommendedMethod;
+    setAiFormula(formula);
+    aiFormulaRef.current = formula;
+    setPendingFormulaToApply({ ...formula });
+  };
+
+  const handleRefreshAiFormula = () => {
+    if (history && history.length > 0) {
+      const freshFormula = generateAiFormulaFromHistory(history, aiFormulaRef.current);
+      setAiFormula(freshFormula);
+      aiFormulaRef.current = freshFormula;
+    }
+  };
+
+  // Main Data Fetcher function
+  const fetchWingoData = async (typeIdToFetch = selectedTypeId) => {
+    try {
+      const res = await fetch(`/api/shwelottery/wingo-history?typeid=${typeIdToFetch}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.history && Array.isArray(data.history)) {
+          const freshHistory: WingoDraw[] = data.history;
+          setHistory(freshHistory);
+
+          // Bootstrap initial backtested track record from available real history
+          if (!bootstrappedHistoryRef.current && freshHistory.length >= 8) {
+            bootstrappedHistoryRef.current = true;
+            const initialBacktested = calculateInitialMethodStats(freshHistory, sensitivity);
+            setMethodStats(initialBacktested);
+          }
+
+          // Bootstrap or refresh 5-minute (40-matches) AI Formula based on recent history
+          if (!aiFormulaRef.current || isFormulaExpired(aiFormulaRef.current)) {
+            const initialFormula = generateAiFormulaFromHistory(freshHistory, aiFormulaRef.current);
+            setAiFormula(initialFormula);
+            aiFormulaRef.current = initialFormula;
+          }
+
+          // The active period currently open on shwelottery.net
+          const activePeriod = data.currentBettingPeriod || data.currentPeriod;
+          setCurrentPeriod(activePeriod);
+          setSecondsLeft(data.secondsLeft);
+
+          if (data.session) {
+            setAccount((prev) => ({
+              ...prev,
+              nickName: data.session.nickName || prev.nickName,
+              amount: data.session.amount || prev.amount,
+              userId: data.session.userId || prev.userId
+            }));
+          }
+
+          // Check if a new draw was completed since our last check!
+          const latestCompleted = freshHistory[0];
+          if (latestCompleted && latestCompleted.period !== lastDrawnPeriodRef.current) {
+            // 1. Concurrently evaluate all 3 algorithms for this completed draw (runs even if user doesn't bet)
+            const targetPreds = activeMethodPredictionsRef.current?.targetPeriod === latestCompleted.period
+              ? activeMethodPredictionsRef.current.predictions
+              : calculateAllPredictions(freshHistory.slice(1), latestCompleted.period, sensitivity);
+
+            setMethodStats((prevStats) => {
+              const updated = updateMethodStatsWithResult(prevStats, targetPreds, latestCompleted);
+
+              // 2. Evaluate Dynamic AI Smart Auto-Switch (User lose % များနေလျှင် Win % အမြင့်ဆုံးသို့ AI မှ Auto change လုပ်ပေးခြင်း)
+              if (isAutoSwitchEnabledRef.current) {
+                const switchResult = evaluateAutoSwitch(aiAlgorithmRef.current, updated, true, userConsecutiveLossesRef.current);
+                if (switchResult.shouldSwitch) {
+                  const prevAlgo = aiAlgorithmRef.current;
+                  setAiAlgorithm(switchResult.bestAlgo);
+                  aiAlgorithmRef.current = switchResult.bestAlgo;
+
+                  setAutoSwitchEvent({
+                    fromAlgo: prevAlgo,
+                    toAlgo: switchResult.bestAlgo,
+                    fromWinRate: updated[prevAlgo]?.winRate || 0,
+                    toWinRate: updated[switchResult.bestAlgo]?.winRate || 0,
+                    reason: switchResult.reason,
+                    timestamp: Date.now()
+                  });
+
+                  if (soundEnabledRef.current) {
+                    playRadarLockSound();
+                  }
+                }
+              }
+
+              return updated;
+            });
+
+            // Check if current user prediction won
+            if (lastDrawnPeriodRef.current !== '' && currentPredictionRef.current) {
+              if (currentPredictionRef.current.targetPeriod === latestCompleted.period) {
+                const won = currentPredictionRef.current.size === latestCompleted.size;
+                if (won) {
+                  setWinCount((w) => w + 1);
+                  if (soundEnabledRef.current) playYouWinVoice();
+                  confetti({
+                    particleCount: 80,
+                    spread: 70,
+                    origin: { y: 0.6 }
+                  });
+                } else {
+                  setLossCount((l) => l + 1);
+                }
+              }
+            }
+            lastDrawnPeriodRef.current = latestCompleted.period;
+          }
+
+          // Generate predictions for the CURRENT ACTIVE period for all 7 algorithms concurrently (Meta Super AI, HMM, Markov, Ensemble, Neural Matrix, N-Gram Sequence, Statistical Probability)
+          if (activePeriod && activePeriod !== lastPredictedPeriodRef.current) {
+            const allPreds = calculateAllPredictions(freshHistory, activePeriod, sensitivity);
+            setMethodPredictions(allPreds);
+            activeMethodPredictionsRef.current = { targetPeriod: activePeriod, predictions: allPreds };
+
+            const currentSelected = allPreds[aiAlgorithmRef.current] || allPreds['META_SUPER_AI'] || allPreds['NEURAL_MATRIX'] || allPreds['HMM'];
+            setPrediction(currentSelected);
+            lastPredictedPeriodRef.current = activePeriod;
+            if (soundEnabledRef.current) playRadarLockSound();
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching Wingo history:', e);
+    }
+  };
+
+  useEffect(() => {
+    lastDrawnPeriodRef.current = '';
+    lastPredictedPeriodRef.current = '';
+    fetchWingoData(selectedTypeId);
+  }, [selectedTypeId, sensitivity, aiAlgorithm]);
+
+  // Recalculate prediction immediately when AI model changes
+  useEffect(() => {
+    if (methodPredictions && methodPredictions[aiAlgorithm]) {
+      setPrediction(methodPredictions[aiAlgorithm]);
+    } else if (history.length > 0 && currentPeriod) {
+      const newPred = calculateAutoGuess(history, currentPeriod, sensitivity, aiAlgorithm);
+      setPrediction(newPred);
+      lastPredictedPeriodRef.current = currentPeriod;
+    }
+  }, [aiAlgorithm, methodPredictions]);
+
+  // High-frequency Poller: Polls backend every 1.5s so timer and period stay locked to shwelottery.net
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      fetchWingoData(selectedTypeId);
+    }, 1500);
+
+    return () => clearInterval(pollInterval);
+  }, [selectedTypeId, sensitivity, soundEnabled, aiAlgorithm]);
+
+  // 1-Second Local Tick
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsLeft((prev) => {
+        const nextVal = prev <= 1 ? 0 : prev - 1;
+
+        if (soundEnabled && nextVal <= 5 && nextVal > 0) {
+          playTickSound();
+        }
+
+        if (nextVal === 0) {
+          fetchWingoData(selectedTypeId);
+        }
+
+        return nextVal;
+      });
+
+      // Deduct regular user timer ONLY if user is NOT admin
+      setUserAccess((prev) => {
+        if (prev.isAdmin || prev.unlimitedTime) {
+          return prev;
+        }
+
+        if (prev.remainingSeconds > 0) {
+          return {
+            ...prev,
+            remainingSeconds: prev.remainingSeconds - 1
+          };
+        } else if (prev.timeCoins > 0) {
+          return {
+            ...prev,
+            timeCoins: prev.timeCoins - 1,
+            remainingSeconds: 360
+          };
+        } else {
+          return prev;
+        }
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [soundEnabled, selectedTypeId]);
+
+  // Admin Login Handler (Passcode: 166061kp)
+  const handleAdminLogin = (passcode: string): boolean => {
+    const validCodes = ['166061kp', '166061', 'admin888', 'shwe999'];
+    if (validCodes.includes(passcode.trim())) {
+      setUserAccess((prev) => ({
+        ...prev,
+        isAdmin: true,
+        unlimitedTime: true,
+        timeCoins: 9999,
+        remainingSeconds: 999999
+      }));
+      if (soundEnabled) {
+        playAdminUnlockedSound();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const handleAdminLogout = () => {
+    setUserAccess((prev) => ({
+      ...prev,
+      isAdmin: false,
+      unlimitedTime: false,
+      timeCoins: 3,
+      remainingSeconds: 600
+    }));
+  };
+
+  const handleAddUserCoins = (coins: number, minutes: number) => {
+    setUserAccess((prev) => ({
+      ...prev,
+      timeCoins: prev.timeCoins + coins,
+      remainingSeconds: prev.remainingSeconds + (minutes * 60)
+    }));
+  };
+
+  const handleRedeemCode = async (code: string) => {
+    try {
+      const res = await fetch('/api/user/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      const data = await res.json();
+      if (data.success) {
+        handleAddUserCoins(data.coinsAdded || 20, data.minutesAdded || 60);
+        return { success: true, message: data.message };
+      }
+      return { success: false, message: data.message || 'ကုဒ်မမှန်ကန်ပါ။' };
+    } catch (e) {
+      return { success: false, message: 'စနစ်ချိတ်ဆက်မှု မအောင်မြင်ပါ။' };
+    }
+  };
+
+  const handleRefreshLogin = async (phone: string, pass: string): Promise<{ success: boolean; message: string }> => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/shwelottery/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, password: pass })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAccount({
+          phone: phone,
+          password: pass,
+          isConnected: true,
+          latencyMs: data.connection?.latencyMs || 34,
+          lastPing: Date.now(),
+          targetUrl: 'https://www.shwelottery.net/',
+          nickName: data.account?.nickName || 'MemberNNG0XDE5',
+          amount: data.account?.amount || '1,000.00'
+        });
+        await fetchWingoData(selectedTypeId);
+        return { success: true, message: data.message || 'ShweLottery အကောင့်ဖြင့် အောင်မြင်စွာ Login ဝင်ရောက်ပြီးပါပြီ!' };
+      } else {
+        return { success: false, message: data.message || 'Login မအောင်မြင်ပါ။ ဖုန်းနံပါတ် သို့မဟုတ် စကားဝှက် စစ်ဆေးပါ။' };
+      }
+    } catch (e: any) {
+      console.error(e);
+      return { success: false, message: e.message || 'ဆာဗာချိတ်ဆက်မှု မအောင်မြင်ပါ။' };
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // 1-Click Apply AI prediction from Floating Predator to Play Station
+  const handleApplyAiFromPredator = () => {
+    setActiveTab('PLAY');
+  };
+
+  const copyCredentials = () => {
+    navigator.clipboard.writeText('Phone: 9798023829\nPassword: 166061kp');
+    setCopiedLogin(true);
+    setTimeout(() => setCopiedLogin(false), 2500);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-amber-500 selection:text-black">
+      {/* FLOATING PREDATOR HUD WIDGET (DRAGGABLE OVERLAY OVER ALL VIEWS) */}
+      {isPredatorVisible && (
+        <FloatingPredator
+          prediction={prediction}
+          secondsLeft={secondsLeft}
+          currentPeriod={currentPeriod}
+          nextPeriod={currentPeriod}
+          selectedTypeId={selectedTypeId}
+          onChangeTypeId={(id) => setSelectedTypeId(id)}
+          lastDrawnItem={history[0] || null}
+          history={history}
+          userAccess={userAccess}
+          soundEnabled={soundEnabled}
+          onToggleSound={() => setSoundEnabled(!soundEnabled)}
+          onOpenAdmin={() => setIsAdminOpen(true)}
+          onOpenRecharge={() => setIsRechargeOpen(true)}
+          onApplyAiBet={handleApplyAiFromPredator}
+          winCount={winCount}
+          lossCount={lossCount}
+          aiAlgorithm={aiAlgorithm}
+          onChangeAiAlgorithm={setAiAlgorithm}
+          methodStats={methodStats}
+          methodPredictions={methodPredictions}
+          isAutoSwitchEnabled={isAutoSwitchEnabled}
+          onToggleAutoSwitch={() => setIsAutoSwitchEnabled(!isAutoSwitchEnabled)}
+          autoSwitchEvent={autoSwitchEvent}
+          activeFormula={aiFormula}
+          onApplyFormula={handleApplyAiFormula}
+          bettingEngineMode={bettingEngineMode}
+          onSelectMode={setBettingEngineMode}
+          onClose={() => setIsPredatorVisible(false)}
+        />
+      )}
+
+      {/* TOP NAVIGATION HEADER */}
+      <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-xl border-b border-amber-500/30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-3">
+          {/* Logo & Brand */}
+          <div className="flex items-center gap-3">
+            <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-700 text-black shadow-[0_0_20px_rgba(245,158,11,0.5)]">
+              <Crosshair className="w-6 h-6 stroke-[2.5] animate-pulse" />
+              <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-slate-950 flex items-center justify-center">
+                <span className="w-1.5 h-1.5 rounded-full bg-white"></span>
+              </span>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="font-tech text-base sm:text-lg font-black tracking-wider text-white">
+                  FLOATING AI PREDATOR
+                </h1>
+                <span className="hidden sm:inline-block text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+                  {selectedTypeId === 30 ? 'WINGO 30S' : 'WINGO 60S (1M)'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-mono hidden sm:block">
+                Target Prediction & Live Play • Synchronized with shwelottery.net
+              </p>
+            </div>
+          </div>
+
+          {/* Navigation View Switcher */}
+          <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 text-xs">
+            <button
+              onClick={() => setActiveTab('PLAY')}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeTab === 'PLAY'
+                  ? 'bg-amber-500 text-black shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Bot className="w-3.5 h-3.5" />
+              Auto Bot Station (အော်တိုကစားမည်)
+            </button>
+
+            <button
+              onClick={() => setActiveTab('WEBVIEW')}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeTab === 'WEBVIEW'
+                  ? 'bg-amber-500 text-black shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">ShweLottery</span> Web View
+            </button>
+
+            <button
+              onClick={() => setActiveTab('HISTORY')}
+              className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                activeTab === 'HISTORY'
+                  ? 'bg-amber-500 text-black shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <Table className="w-3.5 h-3.5" />
+              Draw History
+            </button>
+          </div>
+
+          {/* Right Header Status Actions */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Admin VIP / Time Coins */}
+            {userAccess.isAdmin ? (
+              <button
+                onClick={() => setIsAdminOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/20 border border-red-500/40 text-red-300 text-xs hover:bg-red-600/30 transition-all font-mono"
+              >
+                <ShieldCheck className="w-4 h-4 text-red-400" />
+                <span className="font-bold">ADMIN VIP</span>
+                <span className="hidden md:inline text-[10px] text-red-200">(Time Skip Active)</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => setIsRechargeOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs hover:border-amber-500/40 transition-all font-mono"
+              >
+                <Coins className="w-4 h-4 text-amber-400" />
+                <span className="text-amber-400 font-bold">{userAccess.timeCoins}</span>
+                <span className="text-slate-400 text-[11px] hidden sm:inline">Coins</span>
+              </button>
+            )}
+
+            {/* Floating Predator HUD Toggle */}
+            <button
+              onClick={() => setIsPredatorVisible(!isPredatorVisible)}
+              className={`p-2 rounded-xl border transition-all ${
+                isPredatorVisible
+                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+                  : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+              }`}
+              title={isPredatorVisible ? 'Floating AI Predator HUD ပိတ်ရန် (Hide HUD)' : 'Floating AI Predator HUD ဖွင့်ရန် (Show HUD)'}
+            >
+              <Crosshair className={`w-4 h-4 ${isPredatorVisible ? 'text-amber-400 animate-pulse' : 'text-slate-500'}`} />
+            </button>
+
+            {/* Sound Toggle */}
+            <button
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-300 hover:text-white transition-colors"
+              title={soundEnabled ? 'Mute' : 'Enable Sound'}
+            >
+              {soundEnabled ? <Volume2 className="w-4 h-4 text-amber-400" /> : <VolumeX className="w-4 h-4 text-slate-500" />}
+            </button>
+
+            {/* Admin Entry Button */}
+            <button
+              onClick={() => setIsAdminOpen(true)}
+              className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 hover:bg-amber-500/20 transition-colors"
+              title="Admin Panel"
+            >
+              <Key className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* MAIN CONTAINER */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5">
+        {/* TAB 1: INTERACTIVE PLAY STATION (USER CAN PLAY WHILE PREDATOR FLOATS) */}
+        {/* LIVE AUTO MONITORING DASHBOARD IS SHOWN PROMINENTLY AS THE SOLE PRIMARY FOCUS */}
+        {activeTab === 'PLAY' && (
+          <div className="space-y-5">
+            {/* 1. PRIMARY HERO: LIVE AUTO MONITORING DASHBOARD (INSIDE PLAYABLE GAME STATION) */}
+            <PlayableGameStation
+              currentPeriod={currentPeriod}
+              secondsLeft={secondsLeft}
+              history={history}
+              prediction={prediction}
+              account={account}
+              selectedTypeId={selectedTypeId}
+              onChangeTypeId={(id) => setSelectedTypeId(id)}
+              onRefreshSession={() => fetchWingoData(selectedTypeId)}
+              onApplyAiGuess={handleApplyAiFromPredator}
+              onRefreshLogin={handleRefreshLogin}
+              aiAlgorithm={aiAlgorithm}
+              onChangeAiAlgorithm={(algo) => {
+                setBettingEngineMode('METHODS_7_MODE');
+                setAiAlgorithm(algo);
+              }}
+              methodStats={methodStats}
+              isAutoSwitchEnabled={isAutoSwitchEnabled}
+              onToggleAutoSwitch={() => setIsAutoSwitchEnabled(!isAutoSwitchEnabled)}
+              autoSwitchEvent={autoSwitchEvent}
+              methodPredictions={methodPredictions}
+              activeFormula={aiFormula}
+              pendingFormula={pendingFormulaToApply}
+              onFormulaConsumed={() => setPendingFormulaToApply(null)}
+              onApplyFormula={handleApplyAiFormula}
+              bettingEngineMode={bettingEngineMode}
+              onSelectMode={setBettingEngineMode}
+              onAutoBetActiveChange={(active) => {
+                setIsAutoBotActive((prev) => (prev !== active ? active : prev));
+              }}
+              onAutoMonitoringChange={(state) => {
+                userConsecutiveLossesRef.current = state.consecutiveLosses;
+              }}
+            />
+
+            {/* 2. SECONDARY DASHBOARDS & BANNERS (ACCORDION TITLE BARS ONLY, CLICK TO EXPAND DETAILS) */}
+            <div className="pt-2 space-y-3">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  Secondary Dashboards & Settings (အပိုဆောင်း စနစ်များ)
+                </span>
+                <span className="text-[11px] font-sans text-slate-500">
+                  ခေါင်းစဉ်နှိပ်၍ အသေးစိတ် ဖွင့်/ပိတ် ကြည့်ရှုနိုင်ပါသည်
+                </span>
+              </div>
+
+              {/* ACCORDION 1: AI 40-MATCHES RESEARCH & 5-MINUTES FORMULA ENGINE */}
+              <div className="rounded-2xl border border-amber-500/30 bg-slate-900/90 shadow-xl overflow-hidden transition-all">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('aiFormula')}
+                  className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/60 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-400 flex items-center justify-center shrink-0 shadow">
+                      <Brain className="w-5 h-5 text-amber-400 animate-pulse" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-tech text-sm sm:text-base font-black text-white tracking-wider flex items-center gap-1.5">
+                          <span>AI 40-MATCHES RESEARCH & 5-MINUTES FORMULA ENGINE</span>
+                        </h4>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          5-MIN AUTO RENEWAL
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5 font-sans">
+                        ဂိမ်းဆိုဒ်၏ လတ်တလော ပွဲစဉ် ၄၀ (40 Matches) history များကို AI မှ research လုပ်ပြီး ၅ မိနစ်တိုင်း formula အသစ်ထုတ်ပေးသောစနစ်
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono font-bold text-amber-400">
+                      {aiFormula?.code || 'Scanning...'}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-amber-500/30 text-[11px] font-mono font-bold text-emerald-400 flex items-center gap-1">
+                      <Clock className="w-3 h-3 text-amber-400" />
+                      Next: {Math.floor(formulaCountdownSeconds / 60).toString().padStart(2, '0')}:{(formulaCountdownSeconds % 60).toString().padStart(2, '0')}
+                    </span>
+                    <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs font-mono font-bold border border-amber-500/40">
+                      <span>{openPanels.aiFormula ? 'ပိတ်မည် (Close)' : 'အသေးစိတ်ကြည့်မည် (Details)'}</span>
+                      {openPanels.aiFormula ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </div>
+                  </div>
+                </button>
+
+                {openPanels.aiFormula && (
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/80 animate-in fade-in duration-200">
+                    <AiFormulaPanel
+                      formula={aiFormula}
+                      onRefreshFormula={handleRefreshAiFormula}
+                      onApplyFormula={handleApplyAiFormula}
+                      isAutoBetActive={isAutoBotActive}
+                      currentAlgorithm={aiAlgorithm}
+                      historyCount={history.length}
+                      bettingEngineMode={bettingEngineMode}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* ACCORDION 2: DUAL-MODE BETTING ENGINE SELECTOR */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl overflow-hidden transition-all">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('modeSwitcher')}
+                  className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/60 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 flex items-center justify-center shrink-0 shadow">
+                      <Cpu className="w-5 h-5 text-cyan-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-tech text-sm sm:text-base font-black text-white tracking-wider flex items-center gap-1.5">
+                          <span>AI BETTING ENGINE SELECTOR</span>
+                        </h4>
+                        <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                          bettingEngineMode === 'FORMULA_MODE'
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                            : 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                        }`}>
+                          {bettingEngineMode === 'FORMULA_MODE' ? '5-MIN FORMULA ACTIVE' : '7-METHOD MULTI-AI ACTIVE'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5 font-sans">
+                        5-Min Formula Mode သို့မဟုတ် နည်းပညာ ၇ မျိုး Multi-AI စနစ် အဖွင့်/အပိတ်နှင့် စနစ်ရွေးချယ်မှု
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                    <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold border border-slate-700">
+                      <span>{openPanels.modeSwitcher ? 'ပိတ်မည် (Close)' : 'အသေးစိတ်ကြည့်မည် (Details)'}</span>
+                      {openPanels.modeSwitcher ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </div>
+                  </div>
+                </button>
+
+                {openPanels.modeSwitcher && (
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/80 animate-in fade-in duration-200">
+                    <AiModeSwitcherBar
+                      currentMode={bettingEngineMode}
+                      onSelectMode={setBettingEngineMode}
+                      activeFormula={aiFormula}
+                      currentAlgorithm={aiAlgorithm}
+                      methodStats={methodStats}
+                      isAutoBetActive={isAutoBotActive}
+                      onApplyFormula={handleApplyAiFormula}
+                      onSelectAlgorithm={(algo) => {
+                        setBettingEngineMode('METHODS_7_MODE');
+                        setAiAlgorithm(algo);
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* ACCORDION 3: 7-METHOD REAL-TIME BENCHMARK & AUTO-SWITCH */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl overflow-hidden transition-all">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('benchmark')}
+                  className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/60 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/15 border border-purple-500/40 text-purple-400 flex items-center justify-center shrink-0 shadow">
+                      <BarChart3 className="w-5 h-5 text-purple-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-tech text-sm sm:text-base font-black text-white tracking-wider flex items-center gap-1.5">
+                          <span>7-METHOD REAL-TIME BENCHMARK & AUTO-SWITCH</span>
+                        </h4>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                          2-LOSS GUARD ON
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5 font-sans">
+                        AI နည်းပညာ (၇) မျိုး၏ Live အနိုင်နှုန်း နှိုင်းယှဉ်ချက်များနှင့် User ၂ ကြိမ်ရှုံးလျှင် Auto-Switch ပြုလုပ်သည့် စနစ်
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono font-bold text-amber-300">
+                      👑 Leader: {(['META_SUPER_AI', 'NEURAL_MATRIX', 'NGRAM_SEQUENCE', 'STATISTICAL_PROB', 'ENSEMBLE', 'HMM', 'MARKOV'] as AlgorithmType[]).sort((a, b) => (methodStats[b]?.winRate || 0) - (methodStats[a]?.winRate || 0))[0]} ({methodStats[(['META_SUPER_AI', 'NEURAL_MATRIX', 'NGRAM_SEQUENCE', 'STATISTICAL_PROB', 'ENSEMBLE', 'HMM', 'MARKOV'] as AlgorithmType[]).sort((a, b) => (methodStats[b]?.winRate || 0) - (methodStats[a]?.winRate || 0))[0]]?.winRate}%)
+                    </span>
+                    <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold border border-slate-700">
+                      <span>{openPanels.benchmark ? 'ပိတ်မည် (Close)' : 'အသေးစိတ်ကြည့်မည် (Details)'}</span>
+                      {openPanels.benchmark ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </div>
+                  </div>
+                </button>
+
+                {openPanels.benchmark && (
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/80 animate-in fade-in duration-200">
+                    <MultiMethodBenchmarkBar
+                      stats={methodStats}
+                      currentAlgorithm={aiAlgorithm}
+                      onSelectAlgorithm={(algo) => {
+                        setBettingEngineMode('METHODS_7_MODE');
+                        setAiAlgorithm(algo);
+                      }}
+                      isAutoSwitchEnabled={isAutoSwitchEnabled}
+                      onToggleAutoSwitch={() => setIsAutoSwitchEnabled(!isAutoSwitchEnabled)}
+                      autoSwitchEvent={autoSwitchEvent}
+                      onDismissAutoSwitch={() => setAutoSwitchEvent(null)}
+                      predictions={methodPredictions}
+                      nextPeriod={currentPeriod}
+                      isUserPlaying={activeTab === 'PLAY'}
+                      bettingEngineMode={bettingEngineMode}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* ACCORDION 4: SHWELOTTERY OFFICIAL GATEWAY & ACCOUNT STATUS */}
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/90 shadow-xl overflow-hidden transition-all">
+                <button
+                  type="button"
+                  onClick={() => togglePanel('shweStatus')}
+                  className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left hover:bg-slate-800/60 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 flex items-center justify-center shrink-0 shadow">
+                      <Globe className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-tech text-sm sm:text-base font-black text-white tracking-wider flex items-center gap-1.5">
+                          <span>SHWELOTTERY OFFICIAL GATEWAY & ACCOUNT STATUS</span>
+                        </h4>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                          ONLINE ({account.latencyMs}ms)
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5 font-sans">
+                        ShweLottery (https://www.shwelottery.net/) ဆာဗာ တိုက်ရိုက်ချိတ်ဆက်မှုနှင့် Account အချက်အလက်များ
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-300">
+                      👤 {account.nickName || 'MemberNNG0XDE5'}
+                    </span>
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono font-bold text-amber-400">
+                      K {account.amount || '1,000.00'}
+                    </span>
+                    <div className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-mono font-bold border border-slate-700">
+                      <span>{openPanels.shweStatus ? 'ပိတ်မည် (Close)' : 'အသေးစိတ်ကြည့်မည် (Details)'}</span>
+                      {openPanels.shweStatus ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </div>
+                  </div>
+                </button>
+
+                {openPanels.shweStatus && (
+                  <div className="p-4 border-t border-slate-800 bg-slate-950/80 animate-in fade-in duration-200">
+                    <ShweLotteryStatus
+                      account={account}
+                      onRefreshLogin={handleRefreshLogin}
+                      isSyncing={isSyncing}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: EMBEDDED SHWELOTTERY WEB VIEW */}
+        {activeTab === 'WEBVIEW' && (
+          <div className="space-y-4">
+            <div className="p-4 rounded-2xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-amber-400" />
+                  Official ShweLottery Web View (https://www.shwelottery.net/)
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  အောက်ပါ Web View ပေါ်တွင် Floating AI Predator ဝစ်ဂျက်သည် လွတ်လပ်စွာ ပျံဝဲနေမည်ဖြစ်ပြီး ဂိမ်းကစားရာတွင် တွဲဖက်ကြည့်ရှုနိုင်ပါသည်။
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={copyCredentials}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 border border-slate-700 flex items-center gap-1.5"
+                >
+                  {copiedLogin ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedLogin ? 'Copied Login!' : 'Copy Login (09××××××××)'}</span>
+                </button>
+
+                <a
+                  href="https://www.shwelottery.net/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs flex items-center gap-1.5 shadow"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open in New Tab
+                </a>
+              </div>
+            </div>
+
+            {/* Embedded Iframe Container */}
+            <div className="w-full h-[750px] rounded-2xl overflow-hidden border-2 border-amber-500/30 bg-slate-950 shadow-2xl relative">
+              <iframe
+                src="https://www.shwelottery.net/"
+                className="w-full h-full border-none"
+                title="ShweLottery Official Website"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: DRAW HISTORY & STATS */}
+        {activeTab === 'HISTORY' && (
+          <div className="space-y-6">
+            <WingoGameBoard
+              history={history}
+              currentPeriod={currentPeriod}
+              nextPeriod={currentPeriod}
+              secondsLeft={secondsLeft}
+              prediction={prediction}
+              winCount={winCount}
+              lossCount={lossCount}
+              selectedTypeId={selectedTypeId}
+              onChangeTypeId={(id) => setSelectedTypeId(id)}
+            />
+          </div>
+        )}
+      </main>
+
+      {/* FOOTER */}
+      <footer className="border-t border-slate-800 py-6 text-center text-xs text-slate-500">
+        <p>Floating AI Predator v4.2 • ShweLottery Official Gateway Stream</p>
+        <p className="mt-1 text-[11px] text-slate-600">
+          Target URL: https://www.shwelottery.net/ • ShweLottery Official Stream
+        </p>
+      </footer>
+
+      {/* ADMIN CONTROL MODAL */}
+      <AdminPanel
+        isOpen={isAdminOpen}
+        onClose={() => setIsAdminOpen(false)}
+        userAccess={userAccess}
+        onAdminLogin={handleAdminLogin}
+        onAdminLogout={handleAdminLogout}
+        onAddUserCoins={handleAddUserCoins}
+        sensitivity={sensitivity}
+        onChangeSensitivity={setSensitivity}
+        onResetStats={() => { setWinCount(0); setLossCount(0); }}
+        onForceSync={() => fetchWingoData(selectedTypeId)}
+      />
+
+      {/* TIME COIN RECHARGE MODAL */}
+      <UserCoinModal
+        isOpen={isRechargeOpen}
+        onClose={() => setIsRechargeOpen(false)}
+        userAccess={userAccess}
+        onRedeemCode={handleRedeemCode}
+        onOpenAdmin={() => setIsAdminOpen(true)}
+      />
+    </div>
+  );
+}
